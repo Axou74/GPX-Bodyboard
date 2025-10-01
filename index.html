@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Bodyboard GPX/CSV – Détection de vagues</title>
+
+  <!-- Leaflet (CDN, aucune clé requise) -->
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+  />
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin=""
+    defer
+  ></script>
+
+  <link rel="stylesheet" href="style.css" />
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header>
+    <h1>Bodyboard Session Viewer</h1>
+    <div class="file-controls">
+      <label class="file">
+        <input type="file" id="fileInput" accept=".gpx,.csv" />
+        <span>?? Charger un fichier (GPX/CSV)</span>
+      </label>
+      <button id="fitBtn" disabled>??? Recentrer carte</button>
+      <button id="clearBtn" disabled>?? Effacer</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="sidebar">
+      <div class="panel">
+        <h2>Résumé de la session</h2>
+        <dl class="stats" id="stats">
+          <div><dt>Distance totale</dt><dd id="stat-distance">–</dd></div>
+          <div><dt>Durée</dt><dd id="stat-duration">–</dd></div>
+          <div><dt>Vitesse moyenne</dt><dd id="stat-avg">–</dd></div>
+          <div><dt>Vitesse max</dt><dd id="stat-max">–</dd></div>
+          <div><dt>Nombre de vagues</dt><dd id="stat-waves">–</dd></div>
+          <div><dt>Meilleure vague</dt><dd id="stat-best">–</dd></div>
+        </dl>
+      </div>
+
+      <div class="panel">
+        <h2>Détection des vagues</h2>
+        <div class="controls">
+          <label>
+            Seuil vitesse (km/h)
+            <input type="range" id="thresholdRange" min="5" max="50" value="15" />
+            <input type="number" id="thresholdNumber" min="5" max="100" step="1" value="15" />
+          </label>
+          <label>
+            Durée minimale (s)
+            <input type="number" id="minDuration" min="0" step="1" value="2" />
+          </label>
+          <button id="detectBtn" disabled>?? Détecter les vagues</button>
+          <label class="legend">
+            Légende vitesse
+            <div class="gradient" id="legendGradient" title="Couleurs de vitesse"></div>
+            <div class="legend-scale"><span>lent</span><span>rapide</span></div>
+          </label>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Export</h2>
+        <div class="controls">
+          <button id="exportBtn" disabled>?? Exporter en GPX</button>
+          <small>
+            L’export contient la trace complète. Les vagues détectées sont ajoutées en
+            <code>&lt;trk&gt;</code> séparés pour un repérage facile.
+          </small>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Notes</h2>
+        <ul class="notes">
+          <li>Fond satellite : ESRI World Imagery (gratuit, sans clé).</li>
+          <li>CSV attendu : <code>time,lat,lon[,ele]</code>.</li>
+          <li>La couleur de chaque segment reflète la vitesse (km/h).</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="map-wrap">
+      <div id="map"></div>
+    </section>
+  </main>
+
+  <footer>
+    <span>© 2025 – Codage • Bodyboard GPX/CSV</span>
+  </footer>
+</body>
+</html>
