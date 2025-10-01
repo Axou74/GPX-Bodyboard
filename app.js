@@ -1,17 +1,17 @@
-/* Bodyboard GPX/CSV Viewer – Détection de vagues
+/* Bodyboard GPX/CSV Viewer â€“ DÃ©tection de vagues
  * ------------------------------------------------
  * Fonctionne en ouvrant index.html directement.
- * Dépendances : Leaflet (CDN).
+ * DÃ©pendances : Leaflet (CDN).
  *
- * Principales étapes :
+ * Principales Ã©tapes :
  * 1) Parsing fichier (GPX/CSV) -> points [ {lat, lon, ele, time} ... ]
  * 2) Calculs segmentaires (distance, dt, vitesse) + stats globales
- * 3) Rendu Leaflet : fond satellite + polylines colorées selon la vitesse
- * 4) Détection de vagues : segments consécutifs au-dessus d’un seuil
- * 5) Export GPX : trace complète + vagues en pistes séparées
+ * 3) Rendu Leaflet : fond satellite + polylines colorÃ©es selon la vitesse
+ * 4) DÃ©tection de vagues : segments consÃ©cutifs au-dessus dâ€™un seuil
+ * 5) Export GPX : trace complÃ¨te + vagues en pistes sÃ©parÃ©es
  */
 
-// --------- Sélecteurs UI ----------
+// --------- SÃ©lecteurs UI ----------
 const fileInput = document.getElementById('fileInput');
 const detectBtn = document.getElementById('detectBtn');
 const exportBtn = document.getElementById('exportBtn');
@@ -28,6 +28,16 @@ const statAvg = document.getElementById('stat-avg');
 const statMax = document.getElementById('stat-max');
 const statWaves = document.getElementById('stat-waves');
 const statBest = document.getElementById('stat-best');
+const autoThresholdLabel = document.getElementById('autoThresholdLabel');
+const legendGradient = document.getElementById('legendGradient');
+const legendMin = document.getElementById('legendMin');
+const legendMax = document.getElementById('legendMax');
+const wavesTableBody = document.getElementById('wavesTableBody');
+const wavesEmpty = document.getElementById('wavesEmpty');
+
+const DEFAULT_THRESHOLD_MIN = 5;
+const DEFAULT_THRESHOLD_MAX = 50;
+const DEFAULT_THRESHOLD_NUMBER_MAX = 100;
 
 // ---------- Carte Leaflet ----------
 let map, baseLayer;
@@ -35,6 +45,9 @@ let trackLayerGroup = L.layerGroup();
 let wavesLayerGroup = L.layerGroup();
 
 initMap();
+resetStatsUI();
+resetWaveUI();
+setEnabled(false);
 
 function initMap(){
   map = L.map('map', {
@@ -42,24 +55,25 @@ function initMap(){
     zoomControl: true
   });
 
-  // Fond satellite ESRI (gratuit, pas de clé). Voir TOS ESRI pour usage.
+  // Fond satellite ESRI (gratuit, pas de clÃ©). Voir TOS ESRI pour usage.
   baseLayer = L.tileLayer(
     'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-    { maxZoom: 19, attribution: 'Tiles © Esri — Source: Esri, Earthstar Geographics' }
+    { maxZoom: 19, attribution: 'Tiles Â© Esri â€” Source: Esri, Earthstar Geographics' }
   ).addTo(map);
 
   trackLayerGroup.addTo(map);
   wavesLayerGroup.addTo(map);
 
-  // vue par défaut (monde)
+  // vue par dÃ©faut (monde)
   map.setView([20, 0], 2);
 }
 
-// ------------- État ---------------
+// ------------- Ã‰tat ---------------
 let points = [];        // [{lat, lon, ele, time}]
 let segments = [];      // [{a:[lat,lon], b:[lat,lon], speedKmh, distM, dtS}]
 let stats = null;       // {distM, durationS, avgKmh, maxKmh}
 let waves = [];         // [{startIdx, endIdx, distM, durationS, maxKmh}]
+let autoThreshold = null;
 
 // ------------- Helpers ------------
 const toRad = deg => deg * Math.PI / 180;
@@ -74,11 +88,11 @@ function haversineDistanceM(a, b){
 }
 
 function fmtDistance(m){
-  if (!isFinite(m)) return '–';
+  if (!isFinite(m)) return 'â€“';
   return m >= 1000 ? (m/1000).toFixed(2) + ' km' : m.toFixed(0) + ' m';
 }
 function fmtDuration(s){
-  if (!isFinite(s)) return '–';
+  if (!isFinite(s)) return 'â€“';
   const h = Math.floor(s/3600);
   const m = Math.floor((s%3600)/60);
   const sec = Math.floor(s%60);
@@ -88,7 +102,13 @@ function clamp(v,min,max){return Math.max(min, Math.min(max, v));}
 
 // Couleur par vitesse (km/h) : palette type "blue -> red"
 function speedToColor(speedKmh, minKmh, maxKmh){
-  const t = clamp((speedKmh - minKmh) / Math.max(1e-6, (maxKmh - minKmh)), 0, 1);
+  if (!Number.isFinite(minKmh) || !Number.isFinite(maxKmh)){
+    minKmh = Number.isFinite(speedKmh) ? speedKmh : 0;
+    maxKmh = minKmh + 1;
+  }
+  if (!Number.isFinite(speedKmh)) speedKmh = minKmh;
+  const range = Math.max(1e-3, (maxKmh - minKmh));
+  const t = clamp((speedKmh - minKmh) / range, 0, 1);
   // Interpolation via 5 stops (bleu -> vert -> jaune -> orange -> rouge)
   // On interpole en HSL pour une transition douce.
   const stops = [
@@ -120,15 +140,16 @@ fileInput.addEventListener('change', async (e)=>{
     } else if (name.endsWith('.csv')) {
       points = parseCSV(text);
     } else {
-      throw new Error('Format non supporté (utilise .gpx ou .csv).');
+      throw new Error('Format non supportÃ© (utilise .gpx ou .csv).');
     }
     if (points.length < 2) throw new Error('Pas assez de points dans la trace.');
 
     // Calculs, rendu et UI
     computeSegmentsAndStats();
     renderTrack();
-    updateStatsUI();
+    configureThresholdControls();
     setEnabled(true);
+    runWaveDetection();
 
   }catch(err){
     alert('Erreur au chargement: ' + err.message);
@@ -180,7 +201,7 @@ function parseCSV(text){
     const lat = parseFloat(c[iLat]);
     const lon = parseFloat(c[iLon]);
     const ele = (iEle>=0 && c[iEle]!==undefined) ? parseFloat(c[iEle]) : null;
-    const time = new Date(c[iTime].replace(' ', 'T')); // tolère "YYYY-MM-DD HH:mm:ss"
+    const time = new Date(c[iTime].replace(' ', 'T')); // tolÃ¨re "YYYY-MM-DD HH:mm:ss"
     if (Number.isFinite(lat) && Number.isFinite(lon)) {
       pts.push({lat, lon, ele, time});
     }
@@ -222,27 +243,31 @@ function renderTrack(){
   trackLayerGroup.clearLayers();
   wavesLayerGroup.clearLayers();
 
-  if (segments.length === 0) return;
-
-  // Détermine l’échelle couleur sur la distribution des vitesses
-  const speeds = segments.map(s=>s.speedKmh).filter(v=>Number.isFinite(v));
-  const minK = Math.min(...speeds, 0);
-  const maxK = Math.max(...speeds, 1);
-  const polylines = [];
-
-  // On dessine segment par segment, chacun avec sa couleur
-  for (const seg of segments){
-    const color = speedToColor(seg.speedKmh, minK, maxK);
-    const line = L.polyline([seg.a, seg.b], {
-      color, weight: 4, opacity: 0.95
-    });
-    line.addTo(trackLayerGroup);
-    polylines.push(line);
+  if (segments.length === 0 || points.length === 0) {
+    trackBounds = null;
+    updateLegend(NaN, NaN);
+    resetWaveUI();
+    return;
   }
 
-  // Bounds
-  const latlngs = [points[0], points[points.length-1]].map(p=>[p.lat,p.lon]);
-  trackBounds = L.latLngBounds(points.map(p=>[p.lat,p.lon]));
+  const latlngs = points.map(p=>[p.lat,p.lon]);
+
+  // trace de base en gris
+  L.polyline(latlngs, {
+    color: 'rgba(255,255,255,0.25)',
+    weight: 7,
+    opacity: 0.3,
+    lineCap: 'round'
+  }).addTo(trackLayerGroup);
+
+  L.polyline(latlngs, {
+    color: '#4b5563',
+    weight: 4,
+    opacity: 0.55,
+    lineCap: 'round'
+  }).addTo(trackLayerGroup);
+
+  trackBounds = L.latLngBounds(latlngs);
   map.fitBounds(trackBounds, { padding: [30,30] });
 }
 
@@ -253,33 +278,194 @@ function updateStatsUI(){
   statDuration.textContent = fmtDuration(stats.durationS);
   statAvg.textContent = `${stats.avgKmh.toFixed(2)} km/h`;
   statMax.textContent = `${stats.maxKmh.toFixed(2)} km/h`;
-  statWaves.textContent = waves.length ? String(waves.length) : '–';
-  statBest.textContent = waves.length ? bestWaveLabel(waves) : '–';
+  statWaves.textContent = segments.length ? String(waves.length) : 'â€“';
+  statBest.textContent = segments.length && waves.length ? bestWaveLabel(waves) : 'â€“';
 }
 
 function resetStatsUI(){
   statDistance.textContent = statDuration.textContent = statAvg.textContent =
-  statMax.textContent = statWaves.textContent = statBest.textContent = '–';
+  statMax.textContent = statWaves.textContent = statBest.textContent = 'â€“';
 }
 
 function bestWaveLabel(ws){
-  // "Meilleure vague" = celle avec le pic de vitesse max (fallback : distance)
+  // Â« Meilleure vague Â» = celle avec le pic de vitesse max (fallback : distance)
   let best = ws[0];
   for (const w of ws){
     if (w.maxKmh > best.maxKmh) best = w;
     else if (w.maxKmh === best.maxKmh && w.distM > best.distM) best = w;
   }
-  return `${fmtDistance(best.distM)} • ${fmtDuration(best.durationS)} • ${best.maxKmh.toFixed(1)} km/h`;
+  return `${fmtDistance(best.distM)} â€¢ ${fmtDuration(best.durationS)} â€¢ ${best.maxKmh.toFixed(1)} km/h`;
 }
 
-// ---- Détection des vagues ----------
+function computeAutoThreshold(segs){
+  const speeds = segs.map(s=>s.speedKmh).filter(v=>Number.isFinite(v) && v > 1);
+  if (!speeds.length) return 15;
+  speeds.sort((a,b)=>a-b);
+  const idx = Math.floor(0.75 * (speeds.length - 1));
+  const candidate = speeds[idx];
+  return clamp(candidate, 5, 120);
+}
+
+function configureThresholdControls(){
+  if (!segments.length){
+    autoThreshold = null;
+    thresholdRange.min = thresholdNumber.min = String(DEFAULT_THRESHOLD_MIN);
+    thresholdRange.max = String(DEFAULT_THRESHOLD_MAX);
+    thresholdNumber.max = String(DEFAULT_THRESHOLD_NUMBER_MAX);
+    setThreshold(15);
+    updateAutoThresholdLabel();
+    return;
+  }
+
+  const speeds = segments.map(s=>s.speedKmh).filter(v=>Number.isFinite(v));
+  if (!speeds.length){
+    autoThreshold = null;
+    thresholdRange.min = thresholdNumber.min = String(DEFAULT_THRESHOLD_MIN);
+    thresholdRange.max = String(DEFAULT_THRESHOLD_MAX);
+    thresholdNumber.max = String(DEFAULT_THRESHOLD_NUMBER_MAX);
+    setThreshold(15);
+    autoThresholdLabel.textContent = 'Aucune donnÃ©e de vitesse exploitable.';
+    return;
+  }
+
+  speeds.sort((a,b)=>a-b);
+  const minVal = Math.max(0, Math.floor(Math.min(speeds[0], 5)));
+  const maxSpeed = speeds[speeds.length-1];
+  const maxVal = Math.max(minVal + 5, Math.ceil(Math.max(maxSpeed, 10)));
+
+  thresholdRange.min = thresholdNumber.min = String(minVal);
+  thresholdRange.max = String(Math.max(maxVal, DEFAULT_THRESHOLD_MAX));
+  thresholdNumber.max = String(Math.max(maxVal, DEFAULT_THRESHOLD_NUMBER_MAX));
+
+  autoThreshold = computeAutoThreshold(segments);
+  const applied = setThreshold(autoThreshold);
+  updateAutoThresholdLabel(applied);
+}
+
+function setThreshold(value){
+  const min = Number(thresholdRange.min) || 0;
+  const max = Number(thresholdRange.max) || 100;
+  const clampedValue = clamp(value, min, max);
+  const stepped = Math.round(clampedValue * 2) / 2;
+  const display = Number.isInteger(stepped) ? String(stepped) : stepped.toFixed(1);
+  thresholdRange.value = display;
+  thresholdNumber.value = display;
+  return stepped;
+}
+
+function updateAutoThresholdLabel(current){
+  if (!Number.isFinite(autoThreshold)){
+    autoThresholdLabel.textContent = '';
+    return;
+  }
+  const actual = Number.isFinite(current) ? current : parseFloat(thresholdNumber.value);
+  if (Number.isFinite(actual)){
+    const same = Math.abs(actual - autoThreshold) < 0.25;
+    autoThresholdLabel.textContent = same
+      ? `Seuil automatique suggÃ©rÃ© : ${autoThreshold.toFixed(1)} km/h`
+      : `Seuil automatique suggÃ©rÃ© : ${autoThreshold.toFixed(1)} km/h (actuel : ${actual.toFixed(1)} km/h)`;
+  } else {
+    autoThresholdLabel.textContent = `Seuil automatique suggÃ©rÃ© : ${autoThreshold.toFixed(1)} km/h`;
+  }
+}
+
+function updateLegend(min, max){
+  if (!Number.isFinite(min) || !Number.isFinite(max)){
+    legendGradient.style.background = 'linear-gradient(to right, #2b83ba, #abdda4, #ffffbf, #fdae61, #d7191c)';
+    legendMin.textContent = '';
+    legendMax.textContent = '';
+    return;
+  }
+  if (Math.abs(max - min) < 1e-3){
+    const color = speedToColor(min, min, min + 1);
+    legendGradient.style.background = `linear-gradient(to right, ${color}, ${color})`;
+    legendMin.textContent = `${min.toFixed(1)} km/h`;
+    legendMax.textContent = `${max.toFixed(1)} km/h`;
+    return;
+  }
+  const stops = [0, 0.25, 0.5, 0.75, 1];
+  const colors = stops.map(t => {
+    const speed = min + (max - min) * t;
+    return speedToColor(speed, min, max);
+  });
+  legendGradient.style.background = `linear-gradient(to right, ${colors.join(', ')})`;
+  legendMin.textContent = `${min.toFixed(1)} km/h`;
+  legendMax.textContent = `${max.toFixed(1)} km/h`;
+}
+
+function updateWaveTable(ws){
+  wavesTableBody.innerHTML = '';
+  if (!ws.length){
+    wavesEmpty.style.display = 'block';
+    return;
+  }
+  wavesEmpty.style.display = 'none';
+  ws.forEach((w, idx)=>{
+    const tr = document.createElement('tr');
+    const avg = w.durationS > 0 ? (w.distM / w.durationS * 3.6) : NaN;
+    const avgStr = Number.isFinite(avg) ? `${avg.toFixed(1)} km/h` : 'â€“';
+    tr.innerHTML = `
+      <td>${idx+1}</td>
+      <td>${fmtDistance(w.distM)}</td>
+      <td>${fmtDuration(w.durationS)}</td>
+      <td>${w.maxKmh.toFixed(1)} km/h</td>
+      <td>${avgStr}</td>`;
+    tr.tabIndex = 0;
+    if (w.bounds){
+      tr.addEventListener('click', ()=>{
+        map.fitBounds(w.bounds, { padding:[50,50] });
+      });
+      tr.addEventListener('keypress', (evt)=>{
+        if (evt.key === 'Enter' || evt.key === ' '){
+          evt.preventDefault();
+          map.fitBounds(w.bounds, { padding:[50,50] });
+        }
+      });
+    }
+    wavesTableBody.appendChild(tr);
+  });
+}
+
+function resetWaveUI(){
+  wavesTableBody.innerHTML = '';
+  wavesEmpty.style.display = 'block';
+  updateLegend(NaN, NaN);
+}
+
+function enrichWave(w){
+  const start = Math.max(0, w.startIdx);
+  const end = Math.min(segments.length-1, w.endIdx);
+  const indices = [];
+  for (let i=start;i<=end;i++) indices.push(i);
+  const slice = points.slice(start, end+2);
+  const latlngs = slice.map(p=>[p.lat, p.lon]);
+  const bounds = latlngs.length ? L.latLngBounds(latlngs) : null;
+  const midPoint = latlngs.length ? latlngs[Math.floor(latlngs.length/2)] : null;
+  return { ...w, startIdx:start, endIdx:end, indices, bounds, midPoint };
+}
+
+// ---- DÃ©tection des vagues ----------
 detectBtn.addEventListener('click', ()=>{
-  const threshold = Number(thresholdNumber.value) || 15;
-  const minDur = Math.max(0, Number(minDurationInput.value) || 0);
-  waves = detectWaves(segments, threshold, minDur);
-  renderWaves(waves);
-  updateStatsUI();
+  runWaveDetection(true);
 });
+
+function runWaveDetection(){
+  if (!segments.length){
+    waves = [];
+    wavesLayerGroup.clearLayers();
+    resetWaveUI();
+    updateStatsUI();
+    return;
+  }
+  const thresholdInput = parseFloat(thresholdNumber.value);
+  const threshold = Number.isFinite(thresholdInput) ? thresholdInput : (autoThreshold ?? 15);
+  const minDur = Math.max(0, Number(minDurationInput.value) || 0);
+  waves = detectWaves(segments, threshold, minDur).map(enrichWave);
+  renderWaves(waves);
+  updateWaveTable(waves);
+  updateStatsUI();
+  updateAutoThresholdLabel(threshold);
+}
 
 function detectWaves(segs, thresholdKmh=15, minDurationS=2){
   const found = [];
@@ -291,7 +477,7 @@ function detectWaves(segs, thresholdKmh=15, minDurationS=2){
 
     if (over){
       if (!cur){
-        cur = { startIdx: i-1 >= 0 ? i-1 : 0, endIdx: i, distM: 0, durationS: 0, maxKmh: 0 };
+        cur = { startIdx: Math.max(0, i-1), endIdx: i, distM: 0, durationS: 0, maxKmh: 0 };
       }
       cur.endIdx = i;
       cur.distM += (Number.isFinite(s.distM) ? s.distM : 0);
@@ -306,20 +492,19 @@ function detectWaves(segs, thresholdKmh=15, minDurationS=2){
   }
   if (cur && cur.durationS >= minDurationS) found.push(cur);
 
-  // Fusionne des vagues séparées par 1 segment court sous le seuil (atténue bruit)
+  // Fusionne des vagues sÃ©parÃ©es par un court relÃ¢chement sous le seuil
   const merged = [];
   for (let i=0;i<found.length;i++){
     if (!merged.length) { merged.push(found[i]); continue; }
     const prev = merged[merged.length-1];
-    const gapIdx = prev.endIdx + 1; // segment qui sépare
+    const gapIdx = prev.endIdx + 1;
     if (gapIdx < segs.length){
       const gap = segs[gapIdx];
       const shortGap = Number.isFinite(gap.dtS) ? gap.dtS <= 1.0 : false;
       if (shortGap){
-        // fusion
         prev.endIdx = found[i].endIdx;
-        prev.distM += found[i].distM + (gap.distM||0);
-        prev.durationS += found[i].durationS + (gap.dtS||0);
+        prev.distM += (gap.distM || 0) + found[i].distM;
+        prev.durationS += (gap.dtS || 0) + found[i].durationS;
         prev.maxKmh = Math.max(prev.maxKmh, found[i].maxKmh);
         continue;
       }
@@ -331,31 +516,59 @@ function detectWaves(segs, thresholdKmh=15, minDurationS=2){
 
 function renderWaves(wavesArr){
   wavesLayerGroup.clearLayers();
-  if (!wavesArr.length) return;
+  if (!wavesArr.length){
+    updateLegend(NaN, NaN);
+    return;
+  }
+
+  const speedSamples = [];
+  for (const w of wavesArr){
+    for (const idx of w.indices){
+      const seg = segments[idx];
+      if (seg && Number.isFinite(seg.speedKmh)) speedSamples.push(seg.speedKmh);
+    }
+  }
+  const minSpeed = speedSamples.length ? Math.min(...speedSamples) : NaN;
+  const maxSpeed = speedSamples.length ? Math.max(...speedSamples) : NaN;
+  updateLegend(minSpeed, maxSpeed);
+  let colorMin = Number.isFinite(minSpeed) ? minSpeed : 0;
+  let colorMax = Number.isFinite(maxSpeed) ? maxSpeed : colorMin + 1;
+  if (Math.abs(colorMax - colorMin) < 1e-3) colorMax = colorMin + 1;
 
   for (const w of wavesArr){
-    // récupère les points de startIdx -> endIdx+1
-    const pts = points.slice(w.startIdx, w.endIdx+2).map(p=>[p.lat,p.lon]);
+    for (const idx of w.indices){
+      const seg = segments[idx];
+      if (!seg) continue;
+      const coords = [seg.a, seg.b];
+      L.polyline(coords, {
+        color: 'rgba(255,255,255,0.9)',
+        weight: 6,
+        opacity: 0.75,
+        lineCap: 'round'
+      }).addTo(wavesLayerGroup);
+      L.polyline(coords, {
+        color: speedToColor(seg.speedKmh, colorMin, colorMax),
+        weight: 4,
+        opacity: 0.95,
+        lineCap: 'round'
+      }).addTo(wavesLayerGroup);
+    }
 
-    // polyligne de la vague (accent)
-    L.polyline(pts, {
-      color:'#ffffff', weight:6, opacity:0.8
-    }).addTo(wavesLayerGroup);
-    L.polyline(pts, {
-      color:'#d7191c', weight:3.5, opacity:0.9
-    }).addTo(wavesLayerGroup);
-
-    // popup résumé
-    const mid = pts[Math.floor(pts.length/2)];
-    L.circleMarker(mid, {
-      radius: 6, color:'#d7191c', fill:true, fillOpacity:0.9
-    }).addTo(wavesLayerGroup)
-      .bindPopup(
-        `<b>Vague</b><br>
-        Distance: ${fmtDistance(w.distM)}<br>
-        Durée: ${fmtDuration(w.durationS)}<br>
-        Vitesse max: ${w.maxKmh.toFixed(1)} km/h`
-      );
+    if (w.midPoint){
+      L.circleMarker(w.midPoint, {
+        radius: 6,
+        color: '#ffffff',
+        weight: 2,
+        fillColor: speedToColor(w.maxKmh, colorMin, colorMax),
+        fillOpacity: 0.95
+      }).addTo(wavesLayerGroup)
+        .bindPopup(
+          `<b>Vague</b><br>
+          Distance : ${fmtDistance(w.distM)}<br>
+          DurÃ©e : ${fmtDuration(w.durationS)}<br>
+          Vitesse max : ${w.maxKmh.toFixed(1)} km/h`
+        );
+    }
   }
 }
 
@@ -374,7 +587,7 @@ exportBtn.addEventListener('click', ()=>{
   a.remove();
 });
 
-// Crée un GPX avec la trace principale + une piste par vague détectée
+// CrÃ©e un GPX avec la trace principale + une piste par vague dÃ©tectÃ©e
 function buildGPX(pts, wavesArr){
   const esc = s => String(s).replace(/[<&>]/g, m => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[m]));
   const trkpts = pts.map(p => {
@@ -384,7 +597,7 @@ function buildGPX(pts, wavesArr){
     return `<trkpt lat="${p.lat}" lon="${p.lon}">${eleTag}${timeTag}</trkpt>`;
   }).join('\n        ');
 
-  // Vagues en pistes dédiées (facilite le repérage sur import)
+  // Vagues en pistes dÃ©diÃ©es (facilite le repÃ©rage sur import)
   const waveTrks = wavesArr.map((w,i)=>{
     const slice = pts.slice(w.startIdx, w.endIdx+2);
     const body = slice.map(p=>{
@@ -395,7 +608,7 @@ function buildGPX(pts, wavesArr){
     }).join('\n            ');
     return `
       <trk>
-        <name>${esc(`Wave ${i+1} • ${fmtDistance(w.distM)} • ${w.maxKmh.toFixed(1)} km/h`)}</name>
+        <name>${esc(`Wave ${i+1} â€¢ ${fmtDistance(w.distM)} â€¢ ${w.maxKmh.toFixed(1)} km/h`)}</name>
         <trkseg>
             ${body}
         </trkseg>
@@ -423,13 +636,32 @@ function setEnabled(loaded){
   exportBtn.disabled = !loaded;
   fitBtn.disabled = !loaded;
   clearBtn.disabled = !loaded;
+  thresholdRange.disabled = !loaded;
+  thresholdNumber.disabled = !loaded;
+  minDurationInput.disabled = !loaded;
 }
 
 thresholdRange.addEventListener('input', ()=>{
-  thresholdNumber.value = thresholdRange.value;
+  const val = parseFloat(thresholdRange.value);
+  const applied = setThreshold(val);
+  updateAutoThresholdLabel(applied);
+  runWaveDetection();
 });
+
 thresholdNumber.addEventListener('input', ()=>{
-  thresholdRange.value = thresholdNumber.value;
+  if (thresholdNumber.value === '') return;
+  const val = parseFloat(thresholdNumber.value);
+  if (!Number.isFinite(val)) return;
+  const applied = setThreshold(val);
+  updateAutoThresholdLabel(applied);
+  runWaveDetection();
+});
+
+thresholdNumber.addEventListener('blur', ()=>{
+  if (thresholdNumber.value === ''){
+    const applied = setThreshold(autoThreshold ?? 15);
+    updateAutoThresholdLabel(applied);
+  }
 });
 
 fitBtn.addEventListener('click', ()=>{
@@ -439,15 +671,22 @@ clearBtn.addEventListener('click', ()=>{
   points = []; segments = []; stats = null; waves = [];
   trackLayerGroup.clearLayers(); wavesLayerGroup.clearLayers();
   map.setView([20,0],2);
-  resetStatsUI(); setEnabled(false);
+  autoThreshold = null;
+  thresholdRange.min = thresholdNumber.min = String(DEFAULT_THRESHOLD_MIN);
+  thresholdRange.max = String(DEFAULT_THRESHOLD_MAX);
+  thresholdNumber.max = String(DEFAULT_THRESHOLD_NUMBER_MAX);
+  setThreshold(15);
+  updateAutoThresholdLabel();
+  resetStatsUI();
+  resetWaveUI();
+  setEnabled(false);
 });
 
-// ---------- Auto-détection: recalcul instantané si seuil change (optionnel) ----
-for (const el of [thresholdRange, thresholdNumber, minDurationInput]){
-  el.addEventListener('change', ()=>{
-    if (!segments.length) return;
-    waves = detectWaves(segments, Number(thresholdNumber.value)||15, Number(minDurationInput.value)||0);
-    renderWaves(waves);
-    updateStatsUI();
-  });
-}
+minDurationInput.addEventListener('change', ()=>{
+  runWaveDetection();
+});
+
+minDurationInput.addEventListener('input', ()=>{
+  if (minDurationInput.disabled) return;
+  runWaveDetection();
+});
