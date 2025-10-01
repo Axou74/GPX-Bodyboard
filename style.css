@@ -51,9 +51,13 @@ main{
   box-shadow:0 0 0 1px rgba(0,0,0,0.1) inset;
 }
 
-.file-controls{
-  display:flex;gap:.5rem;flex-wrap:wrap
+.controls-inline{
+  display:flex;
+  gap:.75rem;
+  flex-wrap:wrap;
+  align-items:center;
 }
+.actions{display:flex;gap:.5rem;flex-wrap:wrap}
 .file input[type=file]{display:none}
 .file span{
   display:inline-block;
@@ -76,6 +80,12 @@ button:disabled{opacity:.5;cursor:not-allowed}
 }
 .controls input[type=range]{width:100%}
 
+.auto-threshold{
+  margin:0;
+  font-size:.85rem;
+  color:var(--muted);
+}
+
 .stats{
   display:grid;gap:.35rem;margin:0
 }
@@ -83,12 +93,59 @@ button:disabled{opacity:.5;cursor:not-allowed}
 .stats dt{color:var(--muted)}
 .stats dd{margin:0;font-variant-numeric:tabular-nums}
 
+.step{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  width:1.4rem;height:1.4rem;
+  margin-right:.35rem;
+  background:rgba(76,201,240,0.15);
+  border:1px solid rgba(76,201,240,0.5);
+  border-radius:999px;
+  font-size:.8rem;
+  color:var(--accent);
+  font-weight:700;
+}
+
 .legend{display:grid;gap:.4rem}
 .gradient{
   height:12px;border-radius:6px;border:1px solid var(--border);
   background: linear-gradient(to right, #2b83ba, #abdda4, #ffffbf, #fdae61, #d7191c);
 }
-.legend-scale{display:flex;justify-content:space-between;color:var(--muted);font-size:.85em}
+.legend-scale{display:flex;justify-content:space-between;color:var(--muted);font-size:.85em;font-variant-numeric:tabular-nums}
+
+.waves-table{
+  display:grid;
+  gap:.5rem;
+}
+.waves-table table{
+  width:100%;
+  border-collapse:collapse;
+  font-size:.9rem;
+}
+.waves-table th,
+.waves-table td{
+  text-align:left;
+  padding:.35rem .4rem;
+  border-bottom:1px solid var(--border);
+}
+.waves-table th{
+  color:var(--muted);
+  font-weight:600;
+}
+.waves-table tbody tr{cursor:pointer;}
+.waves-table tbody tr:focus-visible td{
+  outline:2px solid var(--accent);
+  outline-offset:1px;
+}
+.waves-table tr:hover td{
+  background:#111827;
+}
+.waves-table .empty{
+  margin:0;
+  color:var(--muted);
+  font-size:.85rem;
+}
 
 .notes{margin:.25rem 0 0 1rem}
 .notes li{margin:.25rem 0}
