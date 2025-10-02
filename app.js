@@ -21,6 +21,9 @@ const clearBtn = document.getElementById('clearBtn');
 const thresholdRange = document.getElementById('thresholdRange');
 const thresholdNumber = document.getElementById('thresholdNumber');
 const minDurationInput = document.getElementById('minDuration');
+const directionToggle = document.getElementById('directionToggle');
+const directionAngleInput = document.getElementById('directionAngle');
+const directionToleranceInput = document.getElementById('directionTolerance');
 
 const statDistance = document.getElementById('stat-distance');
 const statDuration = document.getElementById('stat-duration');
@@ -39,12 +42,15 @@ const mapStatus = document.getElementById('mapStatus');
 const DEFAULT_THRESHOLD_MIN = 5;
 const DEFAULT_THRESHOLD_MAX = 50;
 const DEFAULT_THRESHOLD_NUMBER_MAX = 100;
+const DEFAULT_DIRECTION_TOLERANCE = 45;
+const DEFAULT_EMPTY_MESSAGE = 'Aucune vague détectée pour le moment.';
 
 // ---------- Carte Leaflet ----------
 let map = null;
 let baseLayer = null;
 let trackLayerGroup = null;
 let wavesLayerGroup = null;
+let directionLayerGroup = null;
 let mapReady = false;
 
 function showMapStatus(){
@@ -63,6 +69,7 @@ initMap();
 resetStatsUI();
 resetWaveUI();
 setEnabled(false);
+initializeDirectionUI();
 
 function initMap(){
   if (typeof L === 'undefined'){
@@ -86,6 +93,7 @@ function initMap(){
     ).addTo(map);
 
     trackLayerGroup = L.layerGroup().addTo(map);
+    directionLayerGroup = L.layerGroup().addTo(map);
     wavesLayerGroup = L.layerGroup().addTo(map);
 
     mapReady = true;
@@ -97,6 +105,7 @@ function initMap(){
     map = null;
     baseLayer = null;
     trackLayerGroup = null;
+    directionLayerGroup = null;
     wavesLayerGroup = null;
     mapReady = false;
     showMapStatus();
@@ -105,7 +114,7 @@ function initMap(){
 
 // ------------- État ---------------
 let points = [];        // [{lat, lon, ele, time}]
-let segments = [];      // [{a:[lat,lon], b:[lat,lon], speedKmh, distM, dtS}]
+let segments = [];      // [{a:[lat,lon], b:[lat,lon], speedKmh, distM, dtS, bearingDeg}]
 let stats = null;       // {distM, durationS, avgKmh, maxKmh}
 let waves = [];         // [{startIdx, endIdx, distM, durationS, maxKmh}]
 let autoThreshold = null;
@@ -134,6 +143,130 @@ function fmtDuration(s){
   return (h>0? `${h}h ` : '') + `${m}m ${sec}s`;
 }
 function clamp(v,min,max){return Math.max(min, Math.min(max, v));}
+
+function normalizeBearing(deg){
+  if (!Number.isFinite(deg)) return NaN;
+  const wrapped = deg % 360;
+  return wrapped < 0 ? wrapped + 360 : wrapped;
+}
+
+function angularDifference(a, b){
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return NaN;
+  const diff = Math.abs(normalizeBearing(a) - normalizeBearing(b)) % 360;
+  return diff > 180 ? 360 - diff : diff;
+}
+
+function toLatLon(value){
+  if (!value) return null;
+  if (Array.isArray(value)){
+    const [lat, lon] = value;
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+    return { lat, lon };
+  }
+  const lat = value.lat ?? value.latitude ?? null;
+  const lon = value.lon ?? value.lng ?? value.longitude ?? null;
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  return { lat, lon };
+}
+
+function formatBearing(deg){
+  if (!Number.isFinite(deg)) return '–';
+  const rounded = Math.round(deg * 10) / 10;
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+}
+
+function destinationPoint(origin, bearingDeg, distanceM){
+  const point = toLatLon(origin);
+  if (!point || !Number.isFinite(distanceM) || distanceM <= 0) return null;
+  const bearing = normalizeBearing(bearingDeg);
+  if (!Number.isFinite(bearing)) return null;
+  const R = 6371000;
+  const angDist = distanceM / R;
+  const lat1 = toRad(point.lat);
+  const lon1 = toRad(point.lon);
+  const brng = toRad(bearing);
+
+  const lat2 = Math.asin(
+    Math.sin(lat1) * Math.cos(angDist) +
+    Math.cos(lat1) * Math.sin(angDist) * Math.cos(brng)
+  );
+  const lon2 = lon1 + Math.atan2(
+    Math.sin(brng) * Math.sin(angDist) * Math.cos(lat1),
+    Math.cos(angDist) - Math.sin(lat1) * Math.sin(lat2)
+  );
+
+  return {
+    lat: lat2 * 180 / Math.PI,
+    lon: ((lon2 * 180 / Math.PI + 540) % 360) - 180
+  };
+}
+
+function bearingDegrees(a, b){
+  const start = toLatLon(a);
+  const end = toLatLon(b);
+  if (!start || !end) return NaN;
+  const lat1 = toRad(start.lat);
+  const lat2 = toRad(end.lat);
+  const dLon = toRad(end.lon - start.lon);
+  const y = Math.sin(dLon) * Math.cos(lat2);
+  const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
+  const brng = Math.atan2(y, x);
+  return normalizeBearing(brng * 180 / Math.PI);
+}
+
+function drawArrow(layer, origin, bearingDeg, options={}){
+  if (!mapReady || !layer) return;
+  const start = toLatLon(origin);
+  if (!start) return;
+  const settings = {
+    length: 200,
+    headLength: undefined,
+    color: '#f97316',
+    weight: 3,
+    opacity: 0.9,
+    fillOpacity: 0.85,
+    dashArray: '4 6'
+  };
+  Object.assign(settings, options || {});
+  const length = Number.isFinite(settings.length) && settings.length > 0 ? settings.length : 200;
+  const headLength = Number.isFinite(settings.headLength) && settings.headLength > 0
+    ? settings.headLength
+    : length * 0.25;
+
+  const tip = destinationPoint(start, bearingDeg, length);
+  if (!tip) return;
+  const lineCoords = [
+    [start.lat, start.lon],
+    [tip.lat, tip.lon]
+  ];
+  const lineOptions = {
+    color: settings.color,
+    weight: settings.weight,
+    opacity: settings.opacity,
+    lineCap: 'round'
+  };
+  if (settings.dashArray){
+    lineOptions.dashArray = settings.dashArray;
+  }
+  L.polyline(lineCoords, lineOptions).addTo(layer);
+
+  const left = destinationPoint(tip, bearingDeg + 150, headLength);
+  const right = destinationPoint(tip, bearingDeg - 150, headLength);
+  if (left && right){
+    L.polygon([
+      [tip.lat, tip.lon],
+      [left.lat, left.lon],
+      [right.lat, right.lon]
+    ], {
+      color: settings.color,
+      weight: settings.weight,
+      opacity: settings.opacity,
+      fillColor: settings.color,
+      fillOpacity: settings.fillOpacity,
+      lineJoin: 'round'
+    }).addTo(layer);
+  }
+}
 
 
 // Couleurs de vagues : dégradé perceptuellement plus lisible (bleu -> vert -> jaune -> rouge)
@@ -272,8 +405,9 @@ function computeSegmentsAndStats(){
     const dt = Number.isFinite(tA) && Number.isFinite(tB) ? (tB - tA)/1000 : NaN;
     const speedMS = (Number.isFinite(dt) && dt>0) ? d/dt : 0;
     const speedKmh = speedMS * 3.6;
+    const bearingDeg = Number.isFinite(d) ? bearingDegrees({lat:a.lat, lon:a.lon}, {lat:b.lat, lon:b.lon}) : NaN;
 
-    segments.push({ a:[a.lat,a.lon], b:[b.lat,b.lon], distM: d, dtS: dt, speedKmh });
+    segments.push({ a:[a.lat,a.lon], b:[b.lat,b.lon], distM: d, dtS: dt, speedKmh, bearingDeg });
 
     if (Number.isFinite(d)) distM += d;
     if (Number.isFinite(dt) && dt>0) durationS += dt;
@@ -295,6 +429,7 @@ function renderTrack(){
 
   trackLayerGroup.clearLayers();
   wavesLayerGroup.clearLayers();
+  if (directionLayerGroup) directionLayerGroup.clearLayers();
 
   if (segments.length === 0 || points.length === 0) {
     trackBounds = null;
@@ -324,6 +459,7 @@ function renderTrack(){
   if (mapReady && map) {
     map.fitBounds(trackBounds, { padding: [30,30] });
   }
+  updateDirectionVisual();
 }
 
 // ---- UI Stats ----------------------
@@ -448,23 +584,47 @@ function updateLegend(min, max){
   legendMax.textContent = `${max.toFixed(1)} km/h`;
 }
 
-function updateWaveTable(ws){
+function updateWaveTable(ws, options={}){
+  const directionSettings = options.directionSettings || null;
+  const filterApplied = Boolean(directionSettings?.enabled);
+  const rejected = Math.max(0, options.rejectedCount || 0);
+  const rawCount = options.rawCount ?? ws.length;
+
   wavesTableBody.innerHTML = '';
+
   if (!ws.length){
     wavesEmpty.style.display = 'block';
+    wavesEmpty.textContent = filterApplied && rawCount > 0
+      ? `Aucune vague ne respecte le sens choisi${rejected ? ` (${rejected} ignorée${rejected>1?'s':''})` : ''}.`
+      : DEFAULT_EMPTY_MESSAGE;
     return;
   }
-  wavesEmpty.style.display = 'none';
+
+  const showDelta = filterApplied && Number.isFinite(directionSettings?.direction);
+  if (filterApplied && rejected > 0){
+    wavesEmpty.style.display = 'block';
+    wavesEmpty.textContent = `${rejected} vague${rejected>1?'s':''} ignorée${rejected>1?'s':''} car hors tolérance.`;
+  } else {
+    wavesEmpty.style.display = 'none';
+  }
+
   ws.forEach((w, idx)=>{
     const tr = document.createElement('tr');
     const avg = w.durationS > 0 ? (w.distM / w.durationS * 3.6) : NaN;
     const avgStr = Number.isFinite(avg) ? `${avg.toFixed(1)} km/h` : '–';
+    const directionStr = Number.isFinite(w.directionDeg) ? `${formatBearing(w.directionDeg)}°` : '–';
+    const delta = showDelta && Number.isFinite(w.directionDeg)
+      ? angularDifference(w.directionDeg, directionSettings.direction)
+      : NaN;
+    const deltaStr = Number.isFinite(delta) ? `${formatBearing(delta)}°` : '–';
     tr.innerHTML = `
       <td>${idx+1}</td>
       <td>${fmtDistance(w.distM)}</td>
       <td>${fmtDuration(w.durationS)}</td>
       <td>${w.maxKmh.toFixed(1)} km/h</td>
-      <td>${avgStr}</td>`;
+      <td>${avgStr}</td>
+      <td>${directionStr}</td>
+      <td>${deltaStr}</td>`;
     tr.tabIndex = 0;
     if (w.bounds){
       tr.addEventListener('click', ()=>{
@@ -484,6 +644,7 @@ function updateWaveTable(ws){
 function resetWaveUI(){
   wavesTableBody.innerHTML = '';
   wavesEmpty.style.display = 'block';
+  wavesEmpty.textContent = DEFAULT_EMPTY_MESSAGE;
   updateLegend(NaN, NaN);
 }
 
@@ -496,8 +657,24 @@ function enrichWave(w){
   const latlngs = slice.map(p=>[p.lat, p.lon]);
   const canUseLeaflet = mapReady && typeof L !== 'undefined';
   const bounds = canUseLeaflet && latlngs.length ? L.latLngBounds(latlngs) : null;
+  const startPoint = canUseLeaflet && latlngs.length ? latlngs[0] : null;
   const midPoint = canUseLeaflet && latlngs.length ? latlngs[Math.floor(latlngs.length/2)] : null;
-  return { ...w, startIdx:start, endIdx:end, indices, bounds, midPoint };
+  let directionDeg = NaN;
+  const bearingSamples = indices
+    .map(idx => segments[idx]?.bearingDeg)
+    .filter(val => Number.isFinite(val));
+  if (bearingSamples.length){
+    const sin = bearingSamples.reduce((acc,deg)=>acc + Math.sin(toRad(deg)), 0);
+    const cos = bearingSamples.reduce((acc,deg)=>acc + Math.cos(toRad(deg)), 0);
+    if (Math.abs(sin) > 1e-6 || Math.abs(cos) > 1e-6){
+      directionDeg = normalizeBearing(Math.atan2(sin, cos) * 180 / Math.PI);
+    }
+  } else if (slice.length >= 2){
+    const first = slice[0];
+    const last = slice[slice.length - 1];
+    directionDeg = bearingDegrees({lat:first.lat, lon:first.lon}, {lat:last.lat, lon:last.lon});
+  }
+  return { ...w, startIdx:start, endIdx:end, indices, bounds, startPoint, midPoint, directionDeg };
 }
 
 // ---- Détection des vagues ----------
@@ -509,6 +686,7 @@ function runWaveDetection(){
   if (!segments.length){
     waves = [];
     if (wavesLayerGroup) wavesLayerGroup.clearLayers();
+    if (directionLayerGroup) directionLayerGroup.clearLayers();
     resetWaveUI();
     updateStatsUI();
     return;
@@ -516,11 +694,29 @@ function runWaveDetection(){
   const thresholdInput = parseFloat(thresholdNumber.value);
   const threshold = Number.isFinite(thresholdInput) ? thresholdInput : (autoThreshold ?? 15);
   const minDur = Math.max(0, Number(minDurationInput.value) || 0);
-  waves = detectWaves(segments, threshold, minDur).map(enrichWave);
+  const directionSettings = getDirectionSettings();
+  const detected = detectWaves(segments, threshold, minDur);
+  const enriched = detected.map(enrichWave);
+  let filtered = enriched;
+  let rejectedCount = 0;
+  if (directionSettings.enabled){
+    filtered = enriched.filter(w => {
+      if (!Number.isFinite(w.directionDeg)) return false;
+      const delta = angularDifference(w.directionDeg, directionSettings.direction);
+      return Number.isFinite(delta) && delta <= directionSettings.tolerance;
+    });
+    rejectedCount = enriched.length - filtered.length;
+  }
+  waves = filtered;
   renderWaves(waves);
-  updateWaveTable(waves);
+  updateWaveTable(waves, {
+    directionSettings,
+    rejectedCount,
+    rawCount: enriched.length
+  });
   updateStatsUI();
   updateAutoThresholdLabel(threshold);
+  updateDirectionVisual(directionSettings);
 }
 
 function detectWaves(segs, thresholdKmh=15, minDurationS=2){
@@ -619,8 +815,8 @@ function renderWaves(wavesArr){
       }).addTo(wavesLayerGroup);
     }
 
-    if (w.midPoint){
-      L.circleMarker(w.midPoint, {
+    if (w.startPoint){
+      L.circleMarker(w.startPoint, {
         radius: 6,
         color: '#ffffff',
         weight: 2,
@@ -635,6 +831,74 @@ function renderWaves(wavesArr){
         );
     }
   }
+}
+
+function getDirectionSettings(){
+  if (!directionToggle || !directionAngleInput || !directionToleranceInput){
+    return { enabled:false, direction:0, tolerance:DEFAULT_DIRECTION_TOLERANCE };
+  }
+  const enabled = !directionToggle.disabled && Boolean(directionToggle.checked);
+  let direction = parseFloat(directionAngleInput.value);
+  if (!Number.isFinite(direction)) direction = 0;
+  direction = normalizeBearing(direction);
+  let tolerance = parseFloat(directionToleranceInput.value);
+  if (!Number.isFinite(tolerance)) tolerance = DEFAULT_DIRECTION_TOLERANCE;
+  tolerance = clamp(tolerance, 0, 180);
+  return { enabled, direction, tolerance };
+}
+
+function updateDirectionInputsState(){
+  if (!directionToggle || !directionAngleInput || !directionToleranceInput) return;
+  const toggleDisabled = Boolean(directionToggle.disabled);
+  const active = !toggleDisabled && directionToggle.checked;
+  directionAngleInput.disabled = toggleDisabled || !active;
+  directionToleranceInput.disabled = toggleDisabled || !active;
+}
+
+function updateDirectionVisual(settings){
+  if (!directionLayerGroup){
+    return;
+  }
+  directionLayerGroup.clearLayers();
+  const config = settings ?? getDirectionSettings();
+  if (!mapReady || !config.enabled || !map) {
+    return;
+  }
+  const originLatLng = trackBounds ? trackBounds.getCenter() : (map ? map.getCenter() : null);
+  const origin = toLatLon(originLatLng);
+  if (!origin) return;
+  let arrowLength = 250;
+  if (trackBounds){
+    const ne = trackBounds.getNorthEast();
+    const sw = trackBounds.getSouthWest();
+    const diag = haversineDistanceM({lat:sw.lat, lon:sw.lng}, {lat:ne.lat, lon:ne.lng});
+    if (Number.isFinite(diag)){
+      arrowLength = clamp(diag * 0.25, 120, 900);
+    }
+  }
+  drawArrow(directionLayerGroup, origin, config.direction, {
+    length: arrowLength,
+    headLength: arrowLength * 0.28,
+    color: '#f97316',
+    weight: 4,
+    opacity: 0.92,
+    fillOpacity: 0.88,
+    dashArray: '6 10'
+  });
+}
+
+function initializeDirectionUI(){
+  if (directionAngleInput){
+    directionAngleInput.value = '0';
+  }
+  if (directionToleranceInput){
+    directionToleranceInput.value = String(DEFAULT_DIRECTION_TOLERANCE);
+  }
+  if (directionToggle){
+    directionToggle.checked = false;
+  }
+  updateDirectionInputsState();
+  updateDirectionVisual();
 }
 
 // ---- Export GPX --------------------
@@ -704,6 +968,10 @@ function setEnabled(loaded){
   thresholdRange.disabled = !loaded;
   thresholdNumber.disabled = !loaded;
   minDurationInput.disabled = !loaded;
+  if (directionToggle){
+    directionToggle.disabled = !loaded;
+  }
+  updateDirectionInputsState();
 }
 
 thresholdRange.addEventListener('input', ()=>{
@@ -737,6 +1005,7 @@ clearBtn.addEventListener('click', ()=>{
   points = []; segments = []; stats = null; waves = [];
   if (trackLayerGroup) trackLayerGroup.clearLayers();
   if (wavesLayerGroup) wavesLayerGroup.clearLayers();
+  if (directionLayerGroup) directionLayerGroup.clearLayers();
   if (mapReady && map) map.setView([20,0],2);
   autoThreshold = null;
   thresholdRange.min = thresholdNumber.min = String(DEFAULT_THRESHOLD_MIN);
@@ -748,6 +1017,7 @@ clearBtn.addEventListener('click', ()=>{
   resetWaveUI();
   setEnabled(false);
   fileInput.value = '';
+  initializeDirectionUI();
 });
 
 minDurationInput.addEventListener('change', ()=>{
@@ -758,3 +1028,52 @@ minDurationInput.addEventListener('input', ()=>{
   if (minDurationInput.disabled) return;
   runWaveDetection();
 });
+
+if (directionToggle){
+  directionToggle.addEventListener('change', ()=>{
+    if (directionToggle.disabled) return;
+    updateDirectionInputsState();
+    updateDirectionVisual();
+    runWaveDetection();
+  });
+}
+
+if (directionAngleInput){
+  const normalizeAngleInput = ()=>{
+    if (directionAngleInput.disabled) return;
+    const settings = getDirectionSettings();
+    directionAngleInput.value = formatBearing(settings.direction);
+  };
+  directionAngleInput.addEventListener('input', ()=>{
+    if (directionAngleInput.disabled) return;
+    updateDirectionVisual();
+    runWaveDetection();
+  });
+  directionAngleInput.addEventListener('blur', ()=>{
+    if (directionAngleInput.disabled) return;
+    if (directionAngleInput.value === ''){
+      directionAngleInput.value = formatBearing(0);
+    } else {
+      normalizeAngleInput();
+    }
+  });
+}
+
+if (directionToleranceInput){
+  const normalizeToleranceInput = ()=>{
+    if (directionToleranceInput.disabled) return;
+    const settings = getDirectionSettings();
+    directionToleranceInput.value = String(Math.round(settings.tolerance));
+  };
+  directionToleranceInput.addEventListener('input', ()=>{
+    if (directionToleranceInput.disabled) return;
+    runWaveDetection();
+  });
+  directionToleranceInput.addEventListener('blur', ()=>{
+    if (directionToleranceInput.disabled) return;
+    if (directionToleranceInput.value === ''){
+      directionToleranceInput.value = String(DEFAULT_DIRECTION_TOLERANCE);
+    }
+    normalizeToleranceInput();
+  });
+}
