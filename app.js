@@ -135,7 +135,22 @@ function fmtDuration(s){
 }
 function clamp(v,min,max){return Math.max(min, Math.min(max, v));}
 
-// Couleur par vitesse (km/h) : palette type "blue -> red"
+
+// Couleurs de vagues : dégradé perceptuellement plus lisible (bleu -> vert -> jaune -> rouge)
+const SPEED_COLOR_STOPS = [
+  {r: 59, g: 130, b: 246},  // bleu soutenu
+  {r: 16, g: 185, b: 129},  // vert turquoise
+  {r: 132, g: 204, b: 22},  // vert lime
+  {r: 250, g: 204, b: 21},  // jaune
+  {r: 249, g: 115, b: 22},  // orange
+  {r: 220, g: 38,  b: 38}   // rouge
+];
+
+function lerp(a, b, t){
+  return a + (b - a) * t;
+}
+
+
 function speedToColor(speedKmh, minKmh, maxKmh){
   if (!Number.isFinite(minKmh) || !Number.isFinite(maxKmh)){
     minKmh = Number.isFinite(speedKmh) ? speedKmh : 0;
@@ -144,22 +159,17 @@ function speedToColor(speedKmh, minKmh, maxKmh){
   if (!Number.isFinite(speedKmh)) speedKmh = minKmh;
   const range = Math.max(1e-3, (maxKmh - minKmh));
   const t = clamp((speedKmh - minKmh) / range, 0, 1);
-  // Interpolation via 5 stops (bleu -> vert -> jaune -> orange -> rouge)
-  // On interpole en HSL pour une transition douce.
-  const stops = [
-    {h:205, s:70, l:45}, // bleu
-    {h:100, s:55, l:55}, // vert
-    {h:55,  s:90, l:60}, // jaune
-    {h:25,  s:85, l:55}, // orange
-    {h:355, s:75, l:48}  // rouge
-  ];
-  const idx = Math.floor(t * (stops.length - 1));
-  const f = t * (stops.length - 1) - idx;
-  const a = stops[idx], b = stops[Math.min(idx+1, stops.length-1)];
-  const h = a.h + (b.h - a.h)*f;
-  const s = a.s + (b.s - a.s)*f;
-  const l = a.l + (b.l - a.l)*f;
-  return `hsl(${h.toFixed(1)} ${s.toFixed(1)}% ${l.toFixed(1)}%)`;
+
+  const scaled = t * (SPEED_COLOR_STOPS.length - 1);
+  const idx = Math.floor(scaled);
+  const frac = scaled - idx;
+  const start = SPEED_COLOR_STOPS[idx];
+  const end = SPEED_COLOR_STOPS[Math.min(idx + 1, SPEED_COLOR_STOPS.length - 1)];
+  const r = Math.round(lerp(start.r, end.r, frac));
+  const g = Math.round(lerp(start.g, end.g, frac));
+  const b = Math.round(lerp(start.b, end.b, frac));
+  return `rgb(${r} ${g} ${b})`;
+
 }
 
 // ------------- Parsing -------------
@@ -416,7 +426,7 @@ function updateAutoThresholdLabel(current){
 
 function updateLegend(min, max){
   if (!Number.isFinite(min) || !Number.isFinite(max)){
-    legendGradient.style.background = 'linear-gradient(to right, #2b83ba, #abdda4, #ffffbf, #fdae61, #d7191c)';
+    legendGradient.style.background = 'linear-gradient(to right, rgb(59 130 246), rgb(16 185 129), rgb(132 204 22), rgb(250 204 21), rgb(249 115 22), rgb(220 38 38))';
     legendMin.textContent = '';
     legendMax.textContent = '';
     return;
@@ -576,7 +586,10 @@ function renderWaves(wavesArr){
       if (seg && Number.isFinite(seg.speedKmh)) speedSamples.push(seg.speedKmh);
     }
   }
-  const minSpeed = speedSamples.length ? Math.min(...speedSamples) : NaN;
+  const positiveSamples = speedSamples.filter(v => v > 0.5);
+  const minSpeed = positiveSamples.length
+    ? Math.min(...positiveSamples)
+    : (speedSamples.length ? Math.min(...speedSamples) : NaN);
   const maxSpeed = speedSamples.length ? Math.max(...speedSamples) : NaN;
   updateLegend(minSpeed, maxSpeed);
   let colorMin = Number.isFinite(minSpeed) ? minSpeed : 0;
