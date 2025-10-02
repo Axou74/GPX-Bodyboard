@@ -135,6 +135,7 @@ function fmtDuration(s){
 }
 function clamp(v,min,max){return Math.max(min, Math.min(max, v));}
 
+
 // Couleurs de vagues : dégradé perceptuellement plus lisible (bleu -> vert -> jaune -> rouge)
 const SPEED_COLOR_STOPS = [
   {r: 59, g: 130, b: 246},  // bleu soutenu
@@ -149,6 +150,7 @@ function lerp(a, b, t){
   return a + (b - a) * t;
 }
 
+
 function speedToColor(speedKmh, minKmh, maxKmh){
   if (!Number.isFinite(minKmh) || !Number.isFinite(maxKmh)){
     minKmh = Number.isFinite(speedKmh) ? speedKmh : 0;
@@ -157,6 +159,7 @@ function speedToColor(speedKmh, minKmh, maxKmh){
   if (!Number.isFinite(speedKmh)) speedKmh = minKmh;
   const range = Math.max(1e-3, (maxKmh - minKmh));
   const t = clamp((speedKmh - minKmh) / range, 0, 1);
+
   const scaled = t * (SPEED_COLOR_STOPS.length - 1);
   const idx = Math.floor(scaled);
   const frac = scaled - idx;
@@ -166,6 +169,7 @@ function speedToColor(speedKmh, minKmh, maxKmh){
   const g = Math.round(lerp(start.g, end.g, frac));
   const b = Math.round(lerp(start.b, end.b, frac));
   return `rgb(${r} ${g} ${b})`;
+
 }
 
 // ------------- Parsing -------------
