@@ -657,6 +657,7 @@ function enrichWave(w){
   const latlngs = slice.map(p=>[p.lat, p.lon]);
   const canUseLeaflet = mapReady && typeof L !== 'undefined';
   const bounds = canUseLeaflet && latlngs.length ? L.latLngBounds(latlngs) : null;
+  const startPoint = canUseLeaflet && latlngs.length ? latlngs[0] : null;
   const midPoint = canUseLeaflet && latlngs.length ? latlngs[Math.floor(latlngs.length/2)] : null;
   let directionDeg = NaN;
   const bearingSamples = indices
@@ -673,7 +674,9 @@ function enrichWave(w){
     const last = slice[slice.length - 1];
     directionDeg = bearingDegrees({lat:first.lat, lon:first.lon}, {lat:last.lat, lon:last.lon});
   }
-  return { ...w, startIdx:start, endIdx:end, indices, bounds, midPoint, directionDeg };
+
+  return { ...w, startIdx:start, endIdx:end, indices, bounds, startPoint, midPoint, directionDeg };
+
 }
 
 // ---- Détection des vagues ----------
@@ -707,7 +710,9 @@ function runWaveDetection(){
     rejectedCount = enriched.length - filtered.length;
   }
   waves = filtered;
-  renderWaves(waves, directionSettings);
+
+  renderWaves(waves);
+
   updateWaveTable(waves, {
     directionSettings,
     rejectedCount,
@@ -816,8 +821,8 @@ function renderWaves(wavesArr, directionSettings={}){
       }).addTo(wavesLayerGroup);
     }
 
-    if (w.midPoint){
-      L.circleMarker(w.midPoint, {
+    if (w.startPoint){
+      L.circleMarker(w.startPoint, {
         radius: 6,
         color: '#ffffff',
         weight: 2,
@@ -847,6 +852,74 @@ function renderWaves(wavesArr, directionSettings={}){
       }
     }
   }
+}
+
+function getDirectionSettings(){
+  if (!directionToggle || !directionAngleInput || !directionToleranceInput){
+    return { enabled:false, direction:0, tolerance:DEFAULT_DIRECTION_TOLERANCE };
+  }
+  const enabled = !directionToggle.disabled && Boolean(directionToggle.checked);
+  let direction = parseFloat(directionAngleInput.value);
+  if (!Number.isFinite(direction)) direction = 0;
+  direction = normalizeBearing(direction);
+  let tolerance = parseFloat(directionToleranceInput.value);
+  if (!Number.isFinite(tolerance)) tolerance = DEFAULT_DIRECTION_TOLERANCE;
+  tolerance = clamp(tolerance, 0, 180);
+  return { enabled, direction, tolerance };
+}
+
+function updateDirectionInputsState(){
+  if (!directionToggle || !directionAngleInput || !directionToleranceInput) return;
+  const toggleDisabled = Boolean(directionToggle.disabled);
+  const active = !toggleDisabled && directionToggle.checked;
+  directionAngleInput.disabled = toggleDisabled || !active;
+  directionToleranceInput.disabled = toggleDisabled || !active;
+}
+
+function updateDirectionVisual(settings){
+  if (!directionLayerGroup){
+    return;
+  }
+  directionLayerGroup.clearLayers();
+  const config = settings ?? getDirectionSettings();
+  if (!mapReady || !config.enabled || !map) {
+    return;
+  }
+  const originLatLng = trackBounds ? trackBounds.getCenter() : (map ? map.getCenter() : null);
+  const origin = toLatLon(originLatLng);
+  if (!origin) return;
+  let arrowLength = 250;
+  if (trackBounds){
+    const ne = trackBounds.getNorthEast();
+    const sw = trackBounds.getSouthWest();
+    const diag = haversineDistanceM({lat:sw.lat, lon:sw.lng}, {lat:ne.lat, lon:ne.lng});
+    if (Number.isFinite(diag)){
+      arrowLength = clamp(diag * 0.25, 120, 900);
+    }
+  }
+  drawArrow(directionLayerGroup, origin, config.direction, {
+    length: arrowLength,
+    headLength: arrowLength * 0.28,
+    color: '#f97316',
+    weight: 4,
+    opacity: 0.92,
+    fillOpacity: 0.88,
+    dashArray: '6 10'
+  });
+}
+
+function initializeDirectionUI(){
+  if (directionAngleInput){
+    directionAngleInput.value = '0';
+  }
+  if (directionToleranceInput){
+    directionToleranceInput.value = String(DEFAULT_DIRECTION_TOLERANCE);
+  }
+  if (directionToggle){
+    directionToggle.checked = false;
+  }
+  updateDirectionInputsState();
+  updateDirectionVisual();
 }
 
 function getDirectionSettings(){
