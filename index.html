@@ -119,7 +119,15 @@
     </section>
 
     <section class="map-wrap">
-      <div id="map"></div>
+      <div class="map-status" id="mapStatus" role="alert" hidden>
+        <strong>Carte indisponible.</strong>
+        <span>
+          Leaflet n’a pas pu être chargé. Vérifiez votre connexion Internet ou les
+          bloqueurs de contenu, puis rechargez la page. Les autres fonctionnalités
+          restent accessibles sans la carte.
+        </span>
+      </div>
+      <div id="map" aria-live="polite"></div>
     </section>
   </main>
 

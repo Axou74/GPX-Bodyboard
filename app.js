@@ -34,15 +34,30 @@ const legendMin = document.getElementById('legendMin');
 const legendMax = document.getElementById('legendMax');
 const wavesTableBody = document.getElementById('wavesTableBody');
 const wavesEmpty = document.getElementById('wavesEmpty');
+const mapStatus = document.getElementById('mapStatus');
 
 const DEFAULT_THRESHOLD_MIN = 5;
 const DEFAULT_THRESHOLD_MAX = 50;
 const DEFAULT_THRESHOLD_NUMBER_MAX = 100;
 
 // ---------- Carte Leaflet ----------
-let map, baseLayer;
-let trackLayerGroup = L.layerGroup();
-let wavesLayerGroup = L.layerGroup();
+let map = null;
+let baseLayer = null;
+let trackLayerGroup = null;
+let wavesLayerGroup = null;
+let mapReady = false;
+
+function showMapStatus(){
+  if (mapStatus){
+    mapStatus.hidden = false;
+  }
+}
+
+function hideMapStatus(){
+  if (mapStatus){
+    mapStatus.hidden = true;
+  }
+}
 
 initMap();
 resetStatsUI();
@@ -50,22 +65,42 @@ resetWaveUI();
 setEnabled(false);
 
 function initMap(){
-  map = L.map('map', {
-    preferCanvas: true, // meilleur rendu pour beaucoup de segments
-    zoomControl: true
-  });
+  if (typeof L === 'undefined'){
+    console.error('Leaflet introuvable : la carte sera désactivée.');
+    showMapStatus();
+    mapReady = false;
+    return;
+  }
 
-  // Fond satellite ESRI (gratuit, pas de clé). Voir TOS ESRI pour usage.
-  baseLayer = L.tileLayer(
-    'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-    { maxZoom: 19, attribution: 'Tiles © Esri — Source: Esri, Earthstar Geographics' }
-  ).addTo(map);
+  try {
+    hideMapStatus();
+    map = L.map('map', {
+      preferCanvas: true, // meilleur rendu pour beaucoup de segments
+      zoomControl: true
+    });
 
-  trackLayerGroup.addTo(map);
-  wavesLayerGroup.addTo(map);
+    // Fond satellite ESRI (gratuit, pas de clé). Voir TOS ESRI pour usage.
+    baseLayer = L.tileLayer(
+      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      { maxZoom: 19, attribution: 'Tiles © Esri — Source: Esri, Earthstar Geographics' }
+    ).addTo(map);
 
-  // vue par défaut (monde)
-  map.setView([20, 0], 2);
+    trackLayerGroup = L.layerGroup().addTo(map);
+    wavesLayerGroup = L.layerGroup().addTo(map);
+
+    mapReady = true;
+
+    // vue par défaut (monde)
+    map.setView([20, 0], 2);
+  } catch (err) {
+    console.error('Impossible d\'initialiser la carte Leaflet.', err);
+    map = null;
+    baseLayer = null;
+    trackLayerGroup = null;
+    wavesLayerGroup = null;
+    mapReady = false;
+    showMapStatus();
+  }
 }
 
 // ------------- État ---------------
@@ -243,6 +278,11 @@ function computeSegmentsAndStats(){
 let trackBounds = null;
 
 function renderTrack(){
+  if (!mapReady || !trackLayerGroup || !wavesLayerGroup){
+    trackBounds = null;
+    return;
+  }
+
   trackLayerGroup.clearLayers();
   wavesLayerGroup.clearLayers();
 
@@ -271,7 +311,9 @@ function renderTrack(){
   }).addTo(trackLayerGroup);
 
   trackBounds = L.latLngBounds(latlngs);
-  map.fitBounds(trackBounds, { padding: [30,30] });
+  if (mapReady && map) {
+    map.fitBounds(trackBounds, { padding: [30,30] });
+  }
 }
 
 // ---- UI Stats ----------------------
@@ -442,8 +484,9 @@ function enrichWave(w){
   for (let i=start;i<=end;i++) indices.push(i);
   const slice = points.slice(start, end+2);
   const latlngs = slice.map(p=>[p.lat, p.lon]);
-  const bounds = latlngs.length ? L.latLngBounds(latlngs) : null;
-  const midPoint = latlngs.length ? latlngs[Math.floor(latlngs.length/2)] : null;
+  const canUseLeaflet = mapReady && typeof L !== 'undefined';
+  const bounds = canUseLeaflet && latlngs.length ? L.latLngBounds(latlngs) : null;
+  const midPoint = canUseLeaflet && latlngs.length ? latlngs[Math.floor(latlngs.length/2)] : null;
   return { ...w, startIdx:start, endIdx:end, indices, bounds, midPoint };
 }
 
@@ -455,7 +498,7 @@ detectBtn.addEventListener('click', ()=>{
 function runWaveDetection(){
   if (!segments.length){
     waves = [];
-    wavesLayerGroup.clearLayers();
+    if (wavesLayerGroup) wavesLayerGroup.clearLayers();
     resetWaveUI();
     updateStatsUI();
     return;
@@ -518,7 +561,9 @@ function detectWaves(segs, thresholdKmh=15, minDurationS=2){
 }
 
 function renderWaves(wavesArr){
-  wavesLayerGroup.clearLayers();
+  if (wavesLayerGroup){
+    wavesLayerGroup.clearLayers();
+  }
   if (!wavesArr.length){
     updateLegend(NaN, NaN);
     return;
@@ -537,6 +582,10 @@ function renderWaves(wavesArr){
   let colorMin = Number.isFinite(minSpeed) ? minSpeed : 0;
   let colorMax = Number.isFinite(maxSpeed) ? maxSpeed : colorMin + 1;
   if (Math.abs(colorMax - colorMin) < 1e-3) colorMax = colorMin + 1;
+
+  if (!mapReady || !wavesLayerGroup){
+    return;
+  }
 
   for (const w of wavesArr){
     for (const idx of w.indices){
@@ -637,7 +686,7 @@ function buildGPX(pts, wavesArr){
 function setEnabled(loaded){
   detectBtn.disabled = !loaded;
   exportBtn.disabled = !loaded;
-  fitBtn.disabled = !loaded;
+  fitBtn.disabled = !loaded || !mapReady;
   clearBtn.disabled = !loaded;
   thresholdRange.disabled = !loaded;
   thresholdNumber.disabled = !loaded;
@@ -668,12 +717,14 @@ thresholdNumber.addEventListener('blur', ()=>{
 });
 
 fitBtn.addEventListener('click', ()=>{
-  if (trackBounds) map.fitBounds(trackBounds, { padding:[30,30] });
+  if (!mapReady || !map || !trackBounds) return;
+  map.fitBounds(trackBounds, { padding:[30,30] });
 });
 clearBtn.addEventListener('click', ()=>{
   points = []; segments = []; stats = null; waves = [];
-  trackLayerGroup.clearLayers(); wavesLayerGroup.clearLayers();
-  map.setView([20,0],2);
+  if (trackLayerGroup) trackLayerGroup.clearLayers();
+  if (wavesLayerGroup) wavesLayerGroup.clearLayers();
+  if (mapReady && map) map.setView([20,0],2);
   autoThreshold = null;
   thresholdRange.min = thresholdNumber.min = String(DEFAULT_THRESHOLD_MIN);
   thresholdRange.max = String(DEFAULT_THRESHOLD_MAX);
