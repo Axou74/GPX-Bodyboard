@@ -41,6 +41,27 @@ main{
 }
 .map-wrap{position:relative}
 #map{position:absolute;inset:0}
+.map-status{
+  position:absolute;
+  inset:0;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  gap:.5rem;
+  text-align:center;
+  padding:1.5rem;
+  background:rgba(13,17,23,0.92);
+  border:1px solid var(--border);
+  border-radius:12px;
+  color:var(--muted);
+  font-size:.95rem;
+  z-index:10;
+}
+.map-status strong{
+  color:var(--text);
+  font-size:1rem;
+}
 
 .panel{
   background:var(--panel);
