@@ -154,6 +154,9 @@ fileInput.addEventListener('change', async (e)=>{
   }catch(err){
     alert('Erreur au chargement: ' + err.message);
     console.error(err);
+  }finally{
+    // Permet de recharger le même fichier sans devoir sélectionner un autre fichier avant
+    fileInput.value = '';
   }
 });
 
@@ -680,6 +683,7 @@ clearBtn.addEventListener('click', ()=>{
   resetStatsUI();
   resetWaveUI();
   setEnabled(false);
+  fileInput.value = '';
 });
 
 minDurationInput.addEventListener('change', ()=>{
