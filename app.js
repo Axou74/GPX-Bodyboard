@@ -649,8 +649,12 @@ function resetWaveUI(){
 }
 
 function enrichWave(w){
-  const start = Math.max(0, w.startIdx);
-  const end = Math.min(segments.length-1, w.endIdx);
+  const overIndices = Array.isArray(w.segmentIndices) ? [...new Set(w.segmentIndices)] : [];
+  overIndices.sort((a,b)=>a-b);
+  const hasOver = overIndices.length > 0;
+  const start = hasOver ? Math.max(0, overIndices[0]) : Math.max(0, w.startIdx);
+  const endCandidate = hasOver ? overIndices[overIndices.length-1] : w.endIdx;
+  const end = Math.min(segments.length-1, endCandidate);
   const indices = [];
   for (let i=start;i<=end;i++) indices.push(i);
   const slice = points.slice(start, end+2);
@@ -660,7 +664,8 @@ function enrichWave(w){
   const startPoint = canUseLeaflet && latlngs.length ? latlngs[0] : null;
   const midPoint = canUseLeaflet && latlngs.length ? latlngs[Math.floor(latlngs.length/2)] : null;
   let directionDeg = NaN;
-  const bearingSamples = indices
+  const directionIndices = hasOver ? overIndices : indices;
+  const bearingSamples = directionIndices
     .map(idx => segments[idx]?.bearingDeg)
     .filter(val => Number.isFinite(val));
   if (bearingSamples.length){
@@ -675,7 +680,7 @@ function enrichWave(w){
     directionDeg = bearingDegrees({lat:first.lat, lon:first.lon}, {lat:last.lat, lon:last.lon});
   }
 
-  return { ...w, startIdx:start, endIdx:end, indices, bounds, startPoint, midPoint, directionDeg };
+  return { ...w, startIdx:start, endIdx:end, indices, segmentIndices: overIndices, bounds, startPoint, midPoint, directionDeg };
 
 }
 
@@ -733,20 +738,28 @@ function detectWaves(segs, thresholdKmh=15, minDurationS=2){
 
     if (over){
       if (!cur){
-        cur = { startIdx: Math.max(0, i-1), endIdx: i, distM: 0, durationS: 0, maxKmh: 0 };
+        cur = {
+          startIdx: i,
+          endIdx: i,
+          distM: 0,
+          durationS: 0,
+          maxKmh: 0,
+          segmentIndices: []
+        };
       }
       cur.endIdx = i;
+      cur.segmentIndices.push(i);
       cur.distM += (Number.isFinite(s.distM) ? s.distM : 0);
       cur.durationS += (Number.isFinite(s.dtS) ? s.dtS : 0);
       if (s.speedKmh > cur.maxKmh) cur.maxKmh = s.speedKmh;
-    } else {
-      if (cur){
-        if (cur.durationS >= minDurationS) found.push(cur);
-        cur = null;
+    } else if (cur){
+      if (cur.durationS >= minDurationS && cur.segmentIndices.length){
+        found.push(cur);
       }
+      cur = null;
     }
   }
-  if (cur && cur.durationS >= minDurationS) found.push(cur);
+  if (cur && cur.durationS >= minDurationS && cur.segmentIndices.length) found.push(cur);
 
   // Fusionne des vagues séparées par un court relâchement sous le seuil
   const merged = [];
@@ -759,6 +772,7 @@ function detectWaves(segs, thresholdKmh=15, minDurationS=2){
       const shortGap = Number.isFinite(gap.dtS) ? gap.dtS <= 1.0 : false;
       if (shortGap){
         prev.endIdx = found[i].endIdx;
+        prev.segmentIndices.push(...found[i].segmentIndices);
         prev.distM += (gap.distM || 0) + found[i].distM;
         prev.durationS += (gap.dtS || 0) + found[i].durationS;
         prev.maxKmh = Math.max(prev.maxKmh, found[i].maxKmh);
@@ -781,7 +795,8 @@ function renderWaves(wavesArr, directionSettings={}){
 
   const speedSamples = [];
   for (const w of wavesArr){
-    for (const idx of w.indices){
+    const idxSource = (w.segmentIndices && w.segmentIndices.length) ? w.segmentIndices : w.indices;
+    for (const idx of idxSource){
       const seg = segments[idx];
       if (seg && Number.isFinite(seg.speedKmh)) speedSamples.push(seg.speedKmh);
     }
@@ -803,7 +818,8 @@ function renderWaves(wavesArr, directionSettings={}){
   const showDirections = Boolean(directionSettings?.enabled);
 
   for (const w of wavesArr){
-    for (const idx of w.indices){
+    const idxSource = (w.segmentIndices && w.segmentIndices.length) ? w.segmentIndices : w.indices;
+    for (const idx of idxSource){
       const seg = segments[idx];
       if (!seg) continue;
       const coords = [seg.a, seg.b];
