@@ -142,6 +142,15 @@ function fmtDuration(s){
   const sec = Math.floor(s%60);
   return (h>0? `${h}h ` : '') + `${m}m ${sec}s`;
 }
+function fmtTime(date){
+  if (!(date instanceof Date) || isNaN(date)) return '–';
+  return date.toLocaleTimeString(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  });
+}
 function clamp(v,min,max){return Math.max(min, Math.min(max, v));}
 
 function normalizeBearing(deg){
@@ -619,6 +628,7 @@ function updateWaveTable(ws, options={}){
     const deltaStr = Number.isFinite(delta) ? `${formatBearing(delta)}°` : '–';
     tr.innerHTML = `
       <td>${idx+1}</td>
+      <td>${fmtTime(w.startTime)}</td>
       <td>${fmtDistance(w.distM)}</td>
       <td>${fmtDuration(w.durationS)}</td>
       <td>${w.maxKmh.toFixed(1)} km/h</td>
@@ -659,9 +669,10 @@ function enrichWave(w){
   for (let i=start;i<=end;i++) indices.push(i);
   const slice = points.slice(start, end+2);
   const latlngs = slice.map(p=>[p.lat, p.lon]);
+  const startSource = points[start] ?? slice[0] ?? null;
   const canUseLeaflet = mapReady && typeof L !== 'undefined';
   const bounds = canUseLeaflet && latlngs.length ? L.latLngBounds(latlngs) : null;
-  const startPoint = canUseLeaflet && latlngs.length ? latlngs[0] : null;
+  const startPoint = canUseLeaflet && startSource ? [startSource.lat, startSource.lon] : null;
   const midPoint = canUseLeaflet && latlngs.length ? latlngs[Math.floor(latlngs.length/2)] : null;
   let directionDeg = NaN;
   const directionIndices = hasOver ? overIndices : indices;
@@ -692,7 +703,8 @@ function enrichWave(w){
     startPoint,
     midPoint,
     directionDeg,
-    avgKmh
+    avgKmh,
+    startTime: (startSource?.time instanceof Date && !isNaN(startSource.time)) ? startSource.time : null
   };
 
 }
@@ -854,6 +866,7 @@ function renderWaves(wavesArr){
       }).addTo(wavesLayerGroup)
         .bindPopup(
           `<b>Vague #${waveIdx+1}</b><br>
+          Début : ${fmtTime(w.startTime)}<br>
           Distance : ${fmtDistance(w.distM)}<br>
           Durée : ${fmtDuration(w.durationS)}<br>
           Vitesse max : ${w.maxKmh.toFixed(1)} km/h<br>
@@ -870,21 +883,6 @@ function renderWaves(wavesArr){
         keyboard: false
       });
       marker.addTo(wavesLayerGroup);
-    }
-    if (w.midPoint && Number.isFinite(w.directionDeg)){
-      const origin = toLatLon(w.midPoint);
-      if (origin){
-        const arrowLength = clamp(w.distM * 0.4, 60, 220);
-        drawArrow(wavesLayerGroup, origin, w.directionDeg, {
-          length: arrowLength,
-          headLength: arrowLength * 0.35,
-          color: waveColor,
-          weight: 2.5,
-          opacity: 0.9,
-          fillOpacity: 0.9,
-          dashArray: null
-        });
-      }
     }
   });
 }
@@ -916,31 +914,6 @@ function updateDirectionVisual(settings){
     return;
   }
   directionLayerGroup.clearLayers();
-  const config = settings ?? getDirectionSettings();
-  if (!mapReady || !config.enabled || !map) {
-    return;
-  }
-  const originLatLng = trackBounds ? trackBounds.getCenter() : (map ? map.getCenter() : null);
-  const origin = toLatLon(originLatLng);
-  if (!origin) return;
-  let arrowLength = 250;
-  if (trackBounds){
-    const ne = trackBounds.getNorthEast();
-    const sw = trackBounds.getSouthWest();
-    const diag = haversineDistanceM({lat:sw.lat, lon:sw.lng}, {lat:ne.lat, lon:ne.lng});
-    if (Number.isFinite(diag)){
-      arrowLength = clamp(diag * 0.25, 120, 900);
-    }
-  }
-  drawArrow(directionLayerGroup, origin, config.direction, {
-    length: arrowLength,
-    headLength: arrowLength * 0.28,
-    color: '#f97316',
-    weight: 4,
-    opacity: 0.92,
-    fillOpacity: 0.88,
-    dashArray: '6 10'
-  });
 }
 
 function initializeDirectionUI(){
@@ -984,31 +957,6 @@ function updateDirectionVisual(settings){
     return;
   }
   directionLayerGroup.clearLayers();
-  const config = settings ?? getDirectionSettings();
-  if (!mapReady || !config.enabled || !map) {
-    return;
-  }
-  const originLatLng = trackBounds ? trackBounds.getCenter() : (map ? map.getCenter() : null);
-  const origin = toLatLon(originLatLng);
-  if (!origin) return;
-  let arrowLength = 250;
-  if (trackBounds){
-    const ne = trackBounds.getNorthEast();
-    const sw = trackBounds.getSouthWest();
-    const diag = haversineDistanceM({lat:sw.lat, lon:sw.lng}, {lat:ne.lat, lon:ne.lng});
-    if (Number.isFinite(diag)){
-      arrowLength = clamp(diag * 0.25, 120, 900);
-    }
-  }
-  drawArrow(directionLayerGroup, origin, config.direction, {
-    length: arrowLength,
-    headLength: arrowLength * 0.28,
-    color: '#f97316',
-    weight: 4,
-    opacity: 0.92,
-    fillOpacity: 0.88,
-    dashArray: '6 10'
-  });
 }
 
 function initializeDirectionUI(){
