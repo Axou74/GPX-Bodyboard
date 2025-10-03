@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Bodyboard GPX/CSV · Détection de vagues</title>
+  <title>Bodyboard GPX/CSV · Détection de vagues (v2)</title>
 
   <!-- Leaflet (CDN, aucune clé requise) -->
   <link
@@ -24,7 +24,7 @@
 </head>
 <body>
   <header>
-    <h1>Bodyboard Session Viewer</h1>
+    <h1>Bodyboard Session Viewer — v2 (détection adaptative)</h1>
   </header>
 
   <main>
@@ -47,17 +47,19 @@
       <div class="panel">
         <h2><span class="step">2</span> Résumé de la session</h2>
         <dl class="stats" id="stats">
-          <div><dt>Distance totale</dt><dd id="stat-distance"></dd></div>
-          <div><dt>Durée</dt><dd id="stat-duration"></dd></div>
-          <div><dt>Vitesse moyenne</dt><dd id="stat-avg"></dd></div>
-          <div><dt>Vitesse max</dt><dd id="stat-max"></dd></div>
-          <div><dt>Nombre de vagues</dt><dd id="stat-waves"></dd></div>
-          <div><dt>Meilleure vague</dt><dd id="stat-best"></dd></div>
+          <div><dt>Distance totale</dt><dd id="stat-distance">–</dd></div>
+          <div><dt>Durée</dt><dd id="stat-duration">–</dd></div>
+          <div><dt>Vitesse moyenne</dt><dd id="stat-avg">–</dd></div>
+          <div><dt>Vitesse max</dt><dd id="stat-max">–</dd></div>
+          <div><dt>Nombre de vagues</dt><dd id="stat-waves">–</dd></div>
+          <div><dt>Meilleure vague</dt><dd id="stat-best">–</dd></div>
         </dl>
       </div>
 
       <div class="panel">
         <h2><span class="step">3</span> Détection des vagues</h2>
+
+        <div class="subhead">Seuil & durée</div>
         <div class="controls">
           <label>
             Seuil vitesse (km/h)
@@ -68,6 +70,39 @@
             Durée minimale (s)
             <input type="number" id="minDuration" min="0" step="1" value="2" />
           </label>
+          <p class="auto-threshold" id="autoThresholdLabel"></p>
+        </div>
+
+        <div class="subhead">Détection adaptative</div>
+        <div class="controls">
+          <label>
+            Fenêtre locale (s)
+            <input type="number" id="winSeconds" min="1" step="1" value="8" />
+          </label>
+          <label>
+            k · σ au-dessus de la médiane
+            <input type="number" id="kSigma" min="0" step="0.1" value="0.8" />
+          </label>
+          <label class="toggle">
+            <input type="checkbox" id="useAdaptive" checked />
+            <span>Activer la détection adaptative</span>
+          </label>
+        </div>
+
+        <div class="subhead">Fin de vague</div>
+        <div class="controls">
+          <label>
+            Chute relative depuis le pic (%)
+            <input type="number" id="dropPct" min="0" max="100" step="1" value="35" />
+          </label>
+          <label>
+            Grâce de fin (s)
+            <input type="number" id="endGrace" min="0" step="0.5" value="1" />
+          </label>
+        </div>
+
+        <div class="subhead">Sens & stabilité</div>
+        <div class="controls">
           <label class="toggle">
             <input type="checkbox" id="directionToggle" />
             <span>Filtrer le sens des vagues</span>
@@ -81,9 +116,24 @@
               Tolérance (°)
               <input type="number" id="directionTolerance" min="0" max="180" step="1" value="45" />
             </label>
+            <label>
+              Variabilité max (écart-type °)
+              <input type="number" id="dirStdMax" min="0" max="180" step="1" value="25" />
+            </label>
           </div>
           <button id="detectBtn" disabled>Actualiser les vagues</button>
-          <p class="auto-threshold" id="autoThresholdLabel"></p>
+        </div>
+
+        <div class="subhead">Couleur</div>
+        <div class="controls">
+          <label>
+            Mode de coloration
+            <select id="colorMode">
+              <option value="avg">Vitesse moyenne (vague)</option>
+              <option value="accel">Accélération instantanée</option>
+              <option value="intra">Dégradé interne (début→pic→fin)</option>
+            </select>
+          </label>
           <label class="legend">
             Légende vitesse
             <div class="gradient" id="legendGradient" title="Couleurs de vitesse"></div>
@@ -106,6 +156,7 @@
                 <th>Vitesse moy.</th>
                 <th>Direction</th>
                 <th>Δ sens</th>
+                <th>Type</th>
               </tr>
             </thead>
             <tbody id="wavesTableBody"></tbody>
@@ -130,7 +181,7 @@
         <ul class="notes">
           <li>Fond satellite : ESRI World Imagery (gratuit, sans clé).</li>
           <li>CSV attendu : <code>time,lat,lon[,ele]</code>.</li>
-          <li>La couleur des vagues reflète la vitesse (km/h).</li>
+          <li>La couleur peut refléter la vitesse, l’accélération ou un dégradé interne.</li>
         </ul>
       </div>
     </section>
@@ -138,11 +189,7 @@
     <section class="map-wrap">
       <div class="map-status" id="mapStatus" role="alert" hidden>
         <strong>Carte indisponible.</strong>
-        <span>
-          Leaflet n’a pas pu être chargé. Vérifiez votre connexion Internet ou les
-          bloqueurs de contenu, puis rechargez la page. Les autres fonctionnalités
-          restent accessibles sans la carte.
-        </span>
+        <span>Leaflet n’a pas pu être chargé. Les autres fonctionnalités restent accessibles.</span>
       </div>
       <div id="map" aria-live="polite"></div>
     </section>
