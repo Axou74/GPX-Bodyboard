@@ -610,7 +610,7 @@ function updateWaveTable(ws, options={}){
 
   ws.forEach((w, idx)=>{
     const tr = document.createElement('tr');
-    const avg = w.durationS > 0 ? (w.distM / w.durationS * 3.6) : NaN;
+    const avg = Number.isFinite(w.avgKmh) ? w.avgKmh : (w.durationS > 0 ? (w.distM / w.durationS * 3.6) : NaN);
     const avgStr = Number.isFinite(avg) ? `${avg.toFixed(1)} km/h` : '–';
     const directionStr = Number.isFinite(w.directionDeg) ? `${formatBearing(w.directionDeg)}°` : '–';
     const delta = showDelta && Number.isFinite(w.directionDeg)
@@ -680,7 +680,20 @@ function enrichWave(w){
     directionDeg = bearingDegrees({lat:first.lat, lon:first.lon}, {lat:last.lat, lon:last.lon});
   }
 
-  return { ...w, startIdx:start, endIdx:end, indices, segmentIndices: overIndices, bounds, startPoint, midPoint, directionDeg };
+  const avgKmh = w.durationS > 0 ? (w.distM / w.durationS * 3.6) : NaN;
+
+  return {
+    ...w,
+    startIdx:start,
+    endIdx:end,
+    indices,
+    segmentIndices: overIndices,
+    bounds,
+    startPoint,
+    midPoint,
+    directionDeg,
+    avgKmh
+  };
 
 }
 
@@ -784,7 +797,7 @@ function detectWaves(segs, thresholdKmh=15, minDurationS=2){
   return merged;
 }
 
-function renderWaves(wavesArr, directionSettings={}){
+function renderWaves(wavesArr){
   if (wavesLayerGroup){
     wavesLayerGroup.clearLayers();
   }
@@ -793,31 +806,25 @@ function renderWaves(wavesArr, directionSettings={}){
     return;
   }
 
-  const speedSamples = [];
-  for (const w of wavesArr){
-    const idxSource = (w.segmentIndices && w.segmentIndices.length) ? w.segmentIndices : w.indices;
-    for (const idx of idxSource){
-      const seg = segments[idx];
-      if (seg && Number.isFinite(seg.speedKmh)) speedSamples.push(seg.speedKmh);
-    }
-  }
-  const positiveSamples = speedSamples.filter(v => v > 0.5);
-  const minSpeed = positiveSamples.length
+  const avgSamples = wavesArr
+    .map(w => Number.isFinite(w.avgKmh) ? w.avgKmh : NaN)
+    .filter(v => Number.isFinite(v));
+  const positiveSamples = avgSamples.filter(v => v > 0.5);
+  const minAvg = positiveSamples.length
     ? Math.min(...positiveSamples)
-    : (speedSamples.length ? Math.min(...speedSamples) : NaN);
-  const maxSpeed = speedSamples.length ? Math.max(...speedSamples) : NaN;
-  updateLegend(minSpeed, maxSpeed);
-  let colorMin = Number.isFinite(minSpeed) ? minSpeed : 0;
-  let colorMax = Number.isFinite(maxSpeed) ? maxSpeed : colorMin + 1;
+    : (avgSamples.length ? Math.min(...avgSamples) : NaN);
+  const maxAvg = avgSamples.length ? Math.max(...avgSamples) : NaN;
+  updateLegend(minAvg, maxAvg);
+  let colorMin = Number.isFinite(minAvg) ? minAvg : 0;
+  let colorMax = Number.isFinite(maxAvg) ? maxAvg : colorMin + 1;
   if (Math.abs(colorMax - colorMin) < 1e-3) colorMax = colorMin + 1;
 
   if (!mapReady || !wavesLayerGroup){
     return;
   }
 
-  const showDirections = Boolean(directionSettings?.enabled);
-
-  for (const w of wavesArr){
+  wavesArr.forEach((w, waveIdx)=>{
+    const waveColor = speedToColor(w.avgKmh, colorMin, colorMax);
     const idxSource = (w.segmentIndices && w.segmentIndices.length) ? w.segmentIndices : w.indices;
     for (const idx of idxSource){
       const seg = segments[idx];
@@ -830,7 +837,7 @@ function renderWaves(wavesArr, directionSettings={}){
         lineCap: 'round'
       }).addTo(wavesLayerGroup);
       L.polyline(coords, {
-        color: speedToColor(seg.speedKmh, colorMin, colorMax),
+        color: waveColor,
         weight: 4,
         opacity: 0.95,
         lineCap: 'round'
@@ -842,32 +849,44 @@ function renderWaves(wavesArr, directionSettings={}){
         radius: 6,
         color: '#ffffff',
         weight: 2,
-        fillColor: speedToColor(w.maxKmh, colorMin, colorMax),
+        fillColor: waveColor,
         fillOpacity: 0.95
       }).addTo(wavesLayerGroup)
         .bindPopup(
-          `<b>Vague</b><br>
+          `<b>Vague #${waveIdx+1}</b><br>
           Distance : ${fmtDistance(w.distM)}<br>
           Durée : ${fmtDuration(w.durationS)}<br>
-          Vitesse max : ${w.maxKmh.toFixed(1)} km/h`
+          Vitesse max : ${w.maxKmh.toFixed(1)} km/h<br>
+          Vitesse moyenne : ${Number.isFinite(w.avgKmh) ? w.avgKmh.toFixed(1) : '–'} km/h`
         );
     }
-    if (showDirections && w.midPoint && Number.isFinite(w.directionDeg)){
+    if (w.midPoint){
+      const marker = L.marker(w.midPoint, {
+        icon: L.divIcon({
+          className: 'wave-label leaflet-div-icon',
+          html: `<span>${waveIdx+1}</span>`
+        }),
+        interactive: false,
+        keyboard: false
+      });
+      marker.addTo(wavesLayerGroup);
+    }
+    if (w.midPoint && Number.isFinite(w.directionDeg)){
       const origin = toLatLon(w.midPoint);
       if (origin){
         const arrowLength = clamp(w.distM * 0.4, 60, 220);
         drawArrow(wavesLayerGroup, origin, w.directionDeg, {
           length: arrowLength,
           headLength: arrowLength * 0.35,
-          color: '#facc15',
+          color: waveColor,
           weight: 2.5,
-          opacity: 0.85,
-          fillOpacity: 0.85,
+          opacity: 0.9,
+          fillOpacity: 0.9,
           dashArray: null
         });
       }
     }
-  }
+  });
 }
 
 function getDirectionSettings(){
